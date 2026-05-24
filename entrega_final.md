@@ -1,0 +1,984 @@
+# T1 — Integração de Modelos em Data Warehouse e Consultas Analíticas
+
+**Disciplina:** Integração e Preparação de Dados  
+**Aluno:** Adriano Lucio  
+**Professor:** Daniel dos Santos Kaster  
+**Instituição:** Universidade Estadual de Londrina — UEL  
+**Data de entrega:** 25/05/2026
+
+---
+
+## 1. Objetivo
+
+Este trabalho propõe e implementa um Data Warehouse (DW) com o objetivo de analisar a relação entre mortalidade por Doenças Cardiovasculares (DCV) e a estrutura de saúde disponível nos municípios brasileiros.
+
+**Pergunta central:**
+> Municípios com maior densidade de estabelecimentos de saúde apresentam menores taxas de mortalidade por DCV?
+
+Para responder a essa pergunta, foram integradas três fontes de dados heterogêneas — em formato CSV, JSON e XML — utilizando SQL nativo do Oracle Database. A chave de integração universal entre as fontes é o código IBGE do município (6 dígitos), presente nos três datasets.
+
+O projeto cobre os temas centrais da disciplina: modelagem de dados (estruturada e semiestruturada), ETL em SQL com Oracle, Data Warehouse no esquema estrela, consultas OLAP com extensões de agrupamento e funções de janela.
+
+---
+
+## 2. Fontes de Dados
+
+Três datasets foram utilizados, cada um em um formato diferente:
+
+### 2.1 Mortalidade_Geral_2025 — CSV
+
+**Arquivo:** `Mortalidade_Geral_2025.csv` (501 MB)  
+**Papel:** fonte principal da tabela fato — 1 linha por óbito registrado no SIM (Sistema de Informação sobre Mortalidade), cobrindo todo o ano de 2025.
+
+O campo `CAUSABAS` contém o CID-10 da causa básica do óbito. Filtrando os CIDs do capítulo I (I00–I99 — Doenças do Aparelho Circulatório), obtemos os óbitos por DCV. O campo `CODMUNRES` é o código IBGE do município de residência do falecido — chave de integração com as demais fontes.
+
+O CSV foi preferido ao JSON e XML do mesmo dataset (2 GB e 2,3 GB, respectivamente) por ser o menor e viável para carga direta.
+
+**Problemas de qualidade encontrados:**
+- `CAUSABAS` pode vir com asterisco prefixado (ex: `*I219`) → tratado com `REPLACE(causabas,'*','')`
+- `IDADE` é codificada (primeiro dígito indica unidade de tempo: 4=anos, 3=meses, 2=dias, 1=horas, 5=centenários) → decodificada via `CASE SUBSTR(idade, 1, 1)` na carga da fato
+- `DTOBITO` no formato `DDMMAAAA` como string → convertida com guard `REGEXP_LIKE(dtobito, '^\d{8}$')` antes do `TO_DATE`
+- Delimitador `;` (ponto e vírgula), não vírgula — configurado no Import Wizard do SQL Developer
+
+### 2.2 cnes_estabelecimentos — JSON
+
+**Arquivo:** `cnes_estabelecimentos.json` (581 MB)  
+**Papel:** fonte da estrutura de saúde por município — quantidade de hospitais e outros estabelecimentos cadastrados no CNES (Cadastro Nacional de Estabelecimentos de Saúde).
+
+O JSON foi escolhido em detrimento do CSV (211 MB) para demonstrar o uso de `SQL/JSON` do Oracle, conforme conteúdo da aula 04. A carga foi feita via `DBMS_LOB.LOADCLOBFROMFILE` (com `bfile_csid` para tratar encoding UTF-8) e normalização com `JSON_TABLE`.
+
+**Problema de qualidade:** o campo `ST_ATEND_HOSPITALAR` chega como `"1.0"` (string com decimal) no JSON, não como `1` (inteiro). Por isso foi mantido como `VARCHAR2` na staging e comparado com `IN ('1','1.0')` nas transformações.
+
+### 2.3 macroregiao_de_saude — XML
+
+**Arquivo:** `macroregiao_de_saude.xml` (2,6 MB)  
+**Papel:** fonte da dimensão geográfica — hierarquia completa (município → região de saúde → macrorregião → grande região do país) e o campo `populacao_ibge_2022`, que é o denominador do cálculo de taxa por 100 mil habitantes.
+
+O XML foi escolhido por ser o menor arquivo disponível, ideal para uma demonstração limpa de `SQL/XML` com `XMLTABLE` (aula 03). A estrutura é `<Rows><Row>...</Row></Rows>` — mapeada com XPath `/Rows/Row`.
+
+### 2.4 Datasets descartados e justificativa
+
+**INFLUD25:** 170+ colunas, 364 MB, cobrindo SRAG/Influenza — tema diferente do eixo DCV. A complexidade seria desproporcional ao ganho analítico.
+
+**taxa_mortalidade_dcv.csv:** continha a taxa de mortalidade por DCV já calculada externamente. Como os óbitos brutos estão na `Mortalidade_Geral_2025` e a população está no XML de macrorregiões, a taxa é calculada diretamente no SQL com `COUNT(*) * 100000.0 / populacao_2022`. Manter o dataset pré-calculado criaria redundância no modelo.
+
+---
+
+## 3. Modelo Dimensional
+
+### 3.1 Arquitetura — Esquema Estrela
+
+O DW foi modelado no esquema estrela com uma tabela fato central (`FATO_OBITO`) e seis dimensões. Uma sétima tabela (`DIM_ESTABELECIMENTO`) é conectada via `DIM_MUNICIPIO` no padrão *outrigger*.
+
+**Por que esquema estrela?** O esquema estrela é o padrão para DWs analíticos (aula 05 — DW-OLAP): uma tabela fato central rodeada por dimensões desnormalizadas. Joins simples, boa performance em GROUP BY, compatível com ferramentas OLAP.
+
+**Esquema estrela — 8 tabelas do DW:**
+
+![Esquema estrela do DW — 8 tabelas](mer/mer_dw_star_8_tables.png)
+
+**Modelo completo com camada de staging — 13 tabelas:**
+
+![Modelo completo com staging e setas ETL](mer/mer_dw_13_tables.png)
+
+**Fluxo de importação das fontes:**
+
+![Importação das fontes de dados para o staging](mer/mer_table_imports.png)
+
+### 3.2 Tabela Fato: FATO_OBITO
+
+**Granularidade:** um registro por óbito (mesmo nível do SIM original).
+
+```sql
+CREATE TABLE fato_obito (
+    sk_obito      NUMBER(12) PRIMARY KEY,
+    sk_municipio  NUMBER(8)  REFERENCES dim_municipio(sk_municipio),
+    sk_data       NUMBER(8)  REFERENCES dim_data(sk_data),
+    sk_causa      NUMBER(8)  REFERENCES dim_causa_morte(sk_causa),
+    sk_sexo       NUMBER(3)  REFERENCES dim_sexo(sk_sexo),
+    sk_raca_cor   NUMBER(3)  REFERENCES dim_raca_cor(sk_raca_cor),
+    sk_local      NUMBER(3)  REFERENCES dim_local_obito(sk_local),
+    idade_anos    NUMBER(5,1),
+    fl_dcv        NUMBER(1)  DEFAULT 0,
+    fl_hospitalar NUMBER(1)  DEFAULT 0,
+    fl_necropsia  NUMBER(1)  DEFAULT 0,
+    nk_contador   NUMBER(12)
+);
+```
+
+O campo `fl_dcv` é uma flag binária pré-calculada na carga: vale `1` quando o CID da causa básica pertence ao capítulo I do CID-10. Isso evita expressões regulares nas consultas analíticas (`WHERE fl_dcv = 1` é simples e utilizável por índice).
+
+O campo `nk_contador` mantém a chave natural do SIM para rastreabilidade — permite localizar o registro original na fonte se necessário.
+
+**Resultado da carga:** ~1.463.000 óbitos (filtros de qualidade descartaram registros sem município válido e óbitos fetais — `tipobito = '2'`).
+
+### 3.3 Dimensões
+
+**DIM_MUNICIPIO** — fonte: XML de macrorregiões. É a dimensão mais rica: além dos dados geográficos, contém `populacao_2022` (denominador das taxas por 100k hab).
+
+**DIM_DATA** — gerada por script via `CONNECT BY LEVEL`, sem dependência de arquivo externo. A surrogate key é o próprio inteiro YYYYMMDD (ex: 20250315), o que permite filtros de range temporal sem JOIN.
+
+**DIM_CAUSA_MORTE** — derivada do `DISTINCT` de `CAUSABAS` na staging. Contém os ~5.666 CIDs presentes nos dados, com flags pré-calculadas por grupo de causa (`fl_dcv`, `fl_respiratoria`, `fl_neoplasia`, `fl_externa`).
+
+**DIM_SEXO, DIM_RACA_COR, DIM_LOCAL_OBITO** — dimensões de domínio fixo, populadas com INSERT direto baseado no dicionário de dados SIM. Três, seis e sete valores, respectivamente.
+
+**DIM_ESTABELECIMENTO (outrigger)** — agrega o CNES por município (qtd_total, qtd_hospitais, qtd_cirurgico, fl_tem_hospital). Não é dimensão direta da fato: um óbito não tem um estabelecimento de saúde associado — tem um município de residência. A infraestrutura hospitalar é atributo do município, não do óbito. Por isso a tabela conecta via `DIM_MUNICIPIO.co_ibge`, não via `FATO_OBITO`. Kimball denomina essa estrutura *outrigger table*.
+
+---
+
+## 4. Pipeline ETL
+
+### 4.1 Visão geral
+
+```
+FONTES BRUTAS             STAGING (tabelas intermediárias)     DW — Esquema Estrela
+──────────────            ────────────────────────────         ─────────────────────
+Mortalidade.csv    ──→   STG_MORTALIDADE              ──→   FATO_OBITO
+                                                              DIM_CAUSA_MORTE
+cnes.json          ──→   STG_CNES_RAW                 ──→   DIM_ESTABELECIMENTO
+                          STG_CNES_JSON
+macroregiao.xml    ──→   STG_MACROREGIAO_RAW          ──→   DIM_MUNICIPIO
+                          STG_MACROREGIAO
+                                                              DIM_DATA
+                                                              DIM_SEXO / DIM_RACA_COR
+                                                              DIM_LOCAL_OBITO
+```
+
+A camada de staging preserva os dados originais sem transformação (todos os campos como `VARCHAR2`), separando claramente a responsabilidade de carga da responsabilidade de transformação. Erros de conversão na staging não corrompem o DW.
+
+As duas tabelas `_RAW` existem porque JSON e XML exigem uma etapa de receptação do dado bruto (CLOB/XMLTYPE) antes da normalização via `JSON_TABLE` / `XMLTABLE`.
+
+### 4.2 Carga do CSV — STG_MORTALIDADE
+
+Feita pelo Import Data Wizard do SQL Developer ou pelo SQL*Loader via linha de comando. O delimitador do SIM é `;` (ponto e vírgula), e foram selecionadas apenas as 15 colunas necessárias — o CSV original tem ~70 colunas, incluindo a coluna `NATURAL` (palavra reservada Oracle, que causaria `ORA-01747`).
+
+**Resultado:** 1.507.424 linhas; zero registros sem causa, sem município ou com data inválida.
+
+### 4.3 Carga do JSON — STG_CNES_JSON
+
+O arquivo JSON foi carregado em uma tabela com coluna `CLOB` via PL/SQL:
+
+```sql
+DBMS_LOB.LOADCLOBFROMFILE(
+    dest_lob     => v_clob,
+    src_bfile    => BFILENAME('BRONZE_DIR', 'cnes_estabelecimentos.json'),
+    amount       => DBMS_LOB.LOBMAXSIZE,
+    dest_offset  => v_dest_offset,
+    src_offset   => v_src_offset,
+    bfile_csid   => NLS_CHARSET_ID('AL32UTF8'),
+    lang_context => v_lang_context,
+    warning      => v_warning
+);
+```
+
+O uso de `LOADCLOBFROMFILE` (e não `LOADFROMFILE`) é necessário para arquivos UTF-8 com caracteres multibyte: `LOADFROMFILE` trata bytes brutos sem conhecer o encoding e pode cortar no meio de um caractere acentuado, causando `ORA-64204`.
+
+A normalização foi feita com `JSON_TABLE` (aula 04), que percorre o documento uma única vez e projeta todos os campos — mais eficiente que `JSON_VALUE` repetido campo a campo:
+
+```sql
+CREATE TABLE stg_cnes_json AS
+SELECT jt.*
+FROM stg_cnes_raw,
+     JSON_TABLE(json_doc, '$[*]' COLUMNS (
+         co_cnes             VARCHAR2(20)  PATH '$.CO_CNES',
+         co_ibge             VARCHAR2(10)  PATH '$.CO_IBGE',
+         st_atend_hospitalar VARCHAR2(5)   PATH '$.ST_ATEND_HOSPITALAR',
+         st_centro_cirurgico VARCHAR2(5)   PATH '$.ST_CENTRO_CIRURGICO',
+         co_ambulatorial_sus VARCHAR2(5)   PATH '$.CO_AMBULATORIAL_SUS'
+         -- demais campos omitidos por brevidade — ver Apêndice A
+     )) jt;
+```
+
+**Resultado:** 612.561 estabelecimentos; 9.642 com atendimento hospitalar.
+
+### 4.4 Carga do XML — STG_MACROREGIAO
+
+```sql
+CREATE TABLE stg_macroregiao AS
+SELECT x.*
+FROM stg_macroregiao_raw,
+     XMLTABLE('/Rows/Row' PASSING xml_doc
+         COLUMNS
+             co_ibge        VARCHAR2(7)   PATH 'cod_municipio',
+             no_municipio   VARCHAR2(100) PATH 'no_municipio',
+             sg_uf          VARCHAR2(2)   PATH 'sg_uf',
+             no_uf          VARCHAR2(50)  PATH 'uf',
+             co_macro       NUMBER        PATH 'cod_macrorregiao_de_saude',
+             no_macro       VARCHAR2(100) PATH 'macrorregiao_de_saude',
+             co_regiao_pais NUMBER        PATH 'co_regiao_pais',
+             no_regiao_pais VARCHAR2(20)  PATH 'regiao_pais',
+             populacao_2022 NUMBER        PATH 'populacao_ibge_2022'
+     ) x;
+```
+
+`XMLTABLE` é preferível a `EXTRACTVALUE`, que está deprecated desde Oracle 12c (aula 03). O XPath `/Rows/Row` navega até cada elemento `<Row>` do arquivo.
+
+**Resultado:** 5.570 municípios; todos com `populacao_2022` preenchido.
+
+### 4.5 Construção das dimensões
+
+**DIM_DATA** foi gerada por script via `CONNECT BY LEVEL`, idioma Oracle equivalente ao `generate_series` do PostgreSQL:
+
+```sql
+SELECT DATE '2020-01-01' + LEVEL - 1 AS dt
+FROM DUAL
+CONNECT BY LEVEL <= DATE '2025-12-31' - DATE '2020-01-01' + 1
+```
+
+**DIM_CAUSA_MORTE** foi derivada do `DISTINCT` de `CAUSABAS` na staging. Um aspecto importante: em Oracle, `''` (string vazia) é idêntico a `NULL`. Por isso, o filtro `NOT IN ('', '000', '999')` eliminaria silenciosamente todas as linhas — qualquer comparação `val <> NULL` retorna `UNKNOWN`. A forma correta é:
+
+```sql
+WHERE TRIM(causabas) IS NOT NULL
+  AND TRIM(causabas) NOT IN ('000', '999')
+```
+
+**DIM_MUNICIPIO** requer padronização do código IBGE (campo pode vir com 7 dígitos no XML) e remoção do prefixo "UF - " nos nomes dos municípios:
+
+```sql
+LPAD(TO_NUMBER(TRIM(co_ibge)), 6, '0')  AS co_ibge,
+TRIM(SUBSTR(no_municipio, 6))           AS no_municipio
+```
+
+### 4.6 Carga da FATO_OBITO
+
+A carga integra a staging com todas as dimensões via JOIN. O join no município é INNER (descarta registros sem município válido). Os demais são LEFT JOIN com fallback para "Ignorado":
+
+```sql
+INSERT INTO fato_obito ( ... )
+SELECT
+    ROWNUM AS sk_obito,
+    m.sk_municipio,
+    TO_NUMBER(TO_CHAR(TO_DATE(s.dtobito, 'DDMMYYYY'), 'YYYYMMDD')) AS sk_data,
+    NVL(c.sk_causa, 0) AS sk_causa,
+    NVL(sx.sk_sexo, 9) AS sk_sexo,
+    NVL(rc.sk_raca_cor, 9) AS sk_raca_cor,
+    NVL(lo.sk_local, 9) AS sk_local,
+    CASE
+        WHEN SUBSTR(s.idade, 1, 1) = '4' THEN TO_NUMBER(SUBSTR(s.idade, 2))
+        WHEN SUBSTR(s.idade, 1, 1) = '3' THEN ROUND(TO_NUMBER(SUBSTR(s.idade, 2)) / 12.0, 1)
+        WHEN SUBSTR(s.idade, 1, 1) IN ('1','2') THEN 0
+        WHEN SUBSTR(s.idade, 1, 1) = '5' THEN TO_NUMBER(SUBSTR(s.idade, 2)) + 100
+        ELSE NULL
+    END AS idade_anos,
+    CASE WHEN REGEXP_LIKE(TRIM(REPLACE(UPPER(s.causabas),'*','')), '^I[0-9]')
+         THEN 1 ELSE 0 END AS fl_dcv,
+    CASE WHEN TRIM(s.lococor) = '1' THEN 1 ELSE 0 END AS fl_hospitalar,
+    CASE WHEN UPPER(TRIM(s.necropsia)) = 'S' THEN 1 ELSE 0 END AS fl_necropsia,
+    TO_NUMBER(s.contador) AS nk_contador
+FROM stg_mortalidade s
+JOIN dim_municipio m
+    ON LPAD(TO_NUMBER(TRIM(s.codmunres)), 6, '0') = m.co_ibge
+LEFT JOIN dim_causa_morte c
+    ON TRIM(REPLACE(UPPER(s.causabas),'*','')) = c.co_cid10
+LEFT JOIN dim_sexo sx      ON TRIM(s.sexo)    = sx.co_sexo
+LEFT JOIN dim_raca_cor rc  ON TRIM(s.racacor) = rc.co_raca_cor
+LEFT JOIN dim_local_obito lo ON TRIM(s.lococor) = lo.co_local
+WHERE TRIM(s.codmunres) IS NOT NULL
+  AND TRIM(s.codmunres) != '000000'
+  AND REGEXP_LIKE(TRIM(s.codmunres), '^[0-9]+$')
+  AND REGEXP_LIKE(s.dtobito, '^\d{8}$')
+  AND TRIM(s.tipobito) = '2';
+```
+
+O guard `REGEXP_LIKE(dtobito, '^\d{8}$')` é necessário porque o SIM tem registros com datas zeradas (`00000000`) que causariam `ORA-01861` no `TO_DATE`.
+
+### 4.7 Índices
+
+```sql
+CREATE INDEX idx_fato_municipio ON fato_obito(sk_municipio);
+CREATE INDEX idx_fato_data      ON fato_obito(sk_data);
+CREATE INDEX idx_fato_causa     ON fato_obito(sk_causa);
+CREATE INDEX idx_fato_fl_dcv    ON fato_obito(fl_dcv);
+```
+
+O índice em `fl_dcv` é particularmente útil: todas as consultas analíticas filtram `WHERE fl_dcv = 1`, e sem índice isso causaria full scan em ~1,5 milhão de linhas.
+
+---
+
+## 5. Consultas Analíticas
+
+As sete consultas analíticas demonstram diferentes técnicas SQL avançadas sobre o DW construído.
+
+### Q1 — Evolução temporal por região (GROUP BY + ROLLUP)
+
+```sql
+SELECT
+    d.nr_ano,
+    d.nr_mes,
+    m.no_regiao_pais,
+    COUNT(*)                                        AS total_obitos,
+    SUM(f.fl_dcv)                                   AS obitos_dcv,
+    ROUND(SUM(f.fl_dcv) * 100.0 / COUNT(*), 2)     AS pct_dcv
+FROM fato_obito f
+JOIN dim_data d      ON f.sk_data      = d.sk_data
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+WHERE d.nr_ano >= 2024
+GROUP BY ROLLUP(d.nr_ano, d.nr_mes, m.no_regiao_pais)
+ORDER BY d.nr_ano, d.nr_mes, m.no_regiao_pais;
+```
+
+**Técnica:** `ROLLUP` (aula 05) gera subtotais hierárquicos automáticos percorrendo a lista de colunas da direita para a esquerda. Para 3 colunas, gera 4 níveis de detalhe: detalhe completo, subtotal por (ano, mês), subtotal por (ano) e total geral. As linhas de subtotal têm `NULL` nas colunas recolhidas. Isso substitui 4 queries unidas por `UNION ALL` em uma única instrução.
+
+`SUM(f.fl_dcv)` funciona como contagem de DCV porque `fl_dcv` é binário — somar 0s e 1s equivale a `COUNT(*) WHERE fl_dcv = 1`, mas mantém o total e o subtotal na mesma passagem.
+
+**Resultado:** Total de 1.505.609 óbitos em 2025; 382.363 (25,4%) por DCV. Pico de mortalidade em julho (26,27% DCV) e queda pronunciada em dezembro (24,35%, provável subnotificação — registros de dezembro entram no SIM em janeiro/fevereiro do ano seguinte). O Sudeste apresenta o maior percentual de DCV (~27%), o Norte o menor (~23%).
+
+---
+
+### Q2 — Comparação multidimensional (CUBE)
+
+```sql
+SELECT
+    NVL(m.no_regiao_pais, 'TOTAL BRASIL')  AS regiao,
+    NVL(m.no_macro,       'TOTAL MACRO')   AS macrorregiao,
+    NVL(s.ds_sexo,        'AMBOS SEXOS')   AS sexo,
+    COUNT(*)                               AS total_obitos_dcv,
+    TRUNC(AVG(f.idade_anos))               AS idade_media_obito
+FROM fato_obito f
+JOIN dim_municipio m   ON f.sk_municipio = m.sk_municipio
+JOIN dim_sexo s        ON f.sk_sexo      = s.sk_sexo
+WHERE f.fl_dcv = 1
+  AND s.co_sexo IN ('1', '2')
+GROUP BY CUBE(m.no_regiao_pais, m.no_macro, s.ds_sexo);
+```
+
+**Técnica:** `CUBE` (aula 05) gera todas as 2³ = 8 combinações de agrupamento para 3 dimensões, diferente do `ROLLUP` que pressupõe hierarquia. É adequado aqui porque região, macrorregião e sexo não têm relação hierárquica entre si — todas as combinações de subtotais têm valor analítico. `NVL` converte os NULLs gerados pelo CUBE em rótulos legíveis. O filtro `co_sexo IN ('1', '2')` exclui o código 9 (ignorado) para que os subtotais de "AMBOS SEXOS" somem exatamente Masculino + Feminino.
+
+**Resultado:** 382.337 óbitos DCV com sexo definido. Feminino: 179.395 óbitos, idade média 75 anos. Masculino: 202.942 óbitos, idade média 70 anos. O gap de 5 anos é consistente em todas as macrorregiões — reflexo do efeito cardioprotetor do estrogênio nas mulheres até a menopausa. Nas macrorregiões da periferia de São Paulo (RRAS3, RRAS4), o masculino morre de DCV em média com 65 anos; no interior do Rio Grande do Sul (VALES, MISSIONEIRA), com 72 anos.
+
+---
+
+### Q3 — Taxa DCV × estrutura hospitalar (consulta principal)
+
+```sql
+SELECT
+    m.no_municipio, m.no_uf, m.no_macro,
+    e.qtd_hospitais,
+    COUNT(*)                                                            AS obitos_dcv,
+    ROUND(COUNT(*) * 100000.0 / NULLIF(m.populacao_2022, 0), 2)        AS taxa_dcv_por_100k,
+    ROUND(e.qtd_hospitais * 100000.0 / NULLIF(m.populacao_2022, 0), 4) AS hospitais_por_100k
+FROM fato_obito f
+JOIN dim_municipio m       ON f.sk_municipio = m.sk_municipio
+JOIN dim_estabelecimento e ON m.co_ibge      = e.co_ibge
+WHERE f.fl_dcv = 1
+  AND m.populacao_2022 > 0
+GROUP BY m.no_municipio, m.no_uf, m.no_macro,
+         e.qtd_hospitais, m.populacao_2022
+ORDER BY taxa_dcv_por_100k DESC
+FETCH FIRST 30 ROWS ONLY;
+```
+
+**Técnica:** `NULLIF(x, 0)` retorna NULL quando x = 0, evitando `ORA-01476` (divisão por zero) sem precisar de `CASE WHEN`. O JOIN com `DIM_ESTABELECIMENTO` é feito via `co_ibge` (não via chave surrogate), pois a `DIM_ESTABELECIMENTO` é um outrigger conectado à `DIM_MUNICIPIO`, não uma dimensão direta da fato. `FETCH FIRST n ROWS ONLY` é a sintaxe Oracle 12c+ equivalente ao `LIMIT` de outros SGBDs.
+
+A taxa por 100 mil habitantes é o indicador epidemiológico padrão para comparar municípios com populações diferentes. Sem normalização, municípios populosos sempre teriam números absolutos maiores, o que não refletiria risco real.
+
+**Resultado:** Os 30 municípios com maiores taxas são quase todos municípios pequenos do Sul — 22 dos 30 (73%) têm zero hospitais. O padrão é consistente com a hipótese. Porém, há limitação estatística importante: Flora Rica (SP) tem apenas 14 óbitos sobre ~1.500 habitantes, gerando taxa de 941/100k — matematicamente correto, mas epidemiologicamente instável. Para análise rigorosa, um filtro mínimo de eventos (`HAVING COUNT(*) >= 30`) reduziria esse ruído.
+
+---
+
+### Q4 — Ranking de municípios por taxa DCV (RANK)
+
+```sql
+SELECT
+    m.no_municipio, m.sg_uf, m.no_macro,
+    COUNT(*)                                                       AS obitos_dcv,
+    ROUND(COUNT(*) * 100000.0 / NULLIF(m.populacao_2022, 0), 2)   AS taxa_dcv_por_100k,
+    RANK() OVER (
+        PARTITION BY m.no_macro
+        ORDER BY COUNT(*) * 100000.0 / NULLIF(m.populacao_2022, 0) DESC
+    ) AS rank_na_macro,
+    RANK() OVER (
+        ORDER BY COUNT(*) * 100000.0 / NULLIF(m.populacao_2022, 0) DESC
+    ) AS rank_nacional
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+WHERE f.fl_dcv = 1
+GROUP BY m.no_municipio, m.sg_uf, m.no_macro, m.co_ibge, m.populacao_2022
+ORDER BY rank_nacional
+FETCH FIRST 50 ROWS ONLY;
+```
+
+**Técnica:** `RANK()` é uma função de janela (window function) que atribui posições sem colapsar linhas — diferente do `GROUP BY`. A cláusula `OVER (PARTITION BY m.no_macro ORDER BY ... DESC)` define uma "janela" por macrorregião onde o ranking recomeça do 1. A segunda chamada `RANK() OVER (ORDER BY ... DESC)` sem `PARTITION BY` opera sobre toda a tabela, produzindo o ranking nacional. `RANK()` atribui a mesma posição para empates e pula a posição seguinte (1, 2, 2, 4) — comportamento correto para rankings competitivos. O campo `m.co_ibge` está no GROUP BY (mas não no SELECT) para diferenciar municípios homônimos em estados diferentes.
+
+**Resultado:** Na posição 18, empate exato entre Barra Bonita (SC) e Floriano Peixoto (RS), ambos com 479,62/100k — `RANK()` atribui 18 para os dois e pula para 20. Floriano Peixoto tem `rank_na_macro = 4` dentro da macrorregião NORTE/RS, mas `rank_nacional = 18` — existem 3 municípios na mesma macro com taxas piores. Isso revela que toda a macrorregião NORTE tem taxas elevadas, não é um outlier isolado. O RS responde por ~50% do top 50 nacional.
+
+---
+
+### Q5 — Perfil dos óbitos por DCV (CASE + GROUP BY)
+
+```sql
+SELECT
+    s.ds_sexo, rc.ds_raca_cor,
+    CASE
+        WHEN f.idade_anos < 40 THEN 'A. Menos de 40 anos'
+        WHEN f.idade_anos < 60 THEN 'B. 40-59 anos'
+        WHEN f.idade_anos < 70 THEN 'C. 60-69 anos'
+        WHEN f.idade_anos < 80 THEN 'D. 70-79 anos'
+        ELSE                        'E. 80 anos ou mais'
+    END AS faixa_etaria,
+    COUNT(*) AS total_obitos,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS pct_total
+FROM fato_obito f
+JOIN dim_sexo s      ON f.sk_sexo     = s.sk_sexo
+JOIN dim_raca_cor rc ON f.sk_raca_cor = rc.sk_raca_cor
+WHERE f.fl_dcv = 1
+  AND s.co_sexo != '9'
+GROUP BY
+    s.ds_sexo, rc.ds_raca_cor,
+    CASE
+        WHEN f.idade_anos < 40 THEN 'A. Menos de 40 anos'
+        WHEN f.idade_anos < 60 THEN 'B. 40-59 anos'
+        WHEN f.idade_anos < 70 THEN 'C. 60-69 anos'
+        WHEN f.idade_anos < 80 THEN 'D. 70-79 anos'
+        ELSE                        'E. 80 anos ou mais'
+    END
+ORDER BY s.ds_sexo, faixa_etaria;
+```
+
+**Técnica:** O `CASE` transforma a idade contínua em faixas etárias categóricas. Os prefixos "A.", "B." forçam a ordem lexicográfica correta sem coluna auxiliar — sem eles, "Menos de 40 anos" viria depois de "80 anos ou mais" na ordenação alfabética. O `CASE` precisa ser repetido integralmente no `GROUP BY` (limitação do SQL padrão: aliases do SELECT não são válidos no GROUP BY no Oracle). `SUM(COUNT(*)) OVER ()` é uma função de janela aplicada sobre o resultado do GROUP BY: o denominador é a soma de todos os grupos, garantindo que `pct_total` some 100%.
+
+**Resultado:** O achado mais relevante é a inversão após os 80 anos: das faixas 40–79, os homens morrem mais por DCV (razão de até 1,75 na faixa 40-59). Acima dos 80, as mulheres morrem mais — não por maior vulnerabilidade cardiovascular, mas porque chegam em maior número ao grupo 80+ (maior expectativa de vida). O maior grupo isolado é "Feminino Branca 80+" com 47.818 óbitos (12,51% do total DCV).
+
+---
+
+### Q6 — Variação mensal de óbitos por DCV (LAG)
+
+```sql
+SELECT
+    m.no_macro, d.nr_ano, d.nr_mes,
+    COUNT(*)                         AS obitos_dcv,
+    LAG(COUNT(*)) OVER (
+        PARTITION BY m.no_macro
+        ORDER BY d.nr_ano, d.nr_mes
+    )                                AS obitos_mes_anterior,
+    COUNT(*) - LAG(COUNT(*)) OVER (
+        PARTITION BY m.no_macro
+        ORDER BY d.nr_ano, d.nr_mes
+    )                                AS variacao_absoluta
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+JOIN dim_data d      ON f.sk_data      = d.sk_data
+WHERE f.fl_dcv = 1
+GROUP BY m.no_macro, d.nr_ano, d.nr_mes
+ORDER BY m.no_macro, d.nr_ano, d.nr_mes;
+```
+
+**Técnica:** `LAG(expr)` retorna o valor da linha anterior dentro da janela definida por `PARTITION BY`. A partição por macrorregião garante que a série temporal de cada macro é independente. `ORDER BY d.nr_ano, d.nr_mes` define o que significa "linha anterior" (cronologicamente). A primeira linha de cada partição retorna `NULL` — comportamento correto, pois não existe mês anterior. Antes das funções de janela, isso exigiria um self-join com lógica manual de "mês anterior", percorrendo a tabela duas vezes.
+
+**Resultado:** Todas as macrorregiões exibem pico entre maio–agosto (inverno) e queda em dezembro. A macrorregião CENTRO caiu de 953 óbitos em novembro para 395 em dezembro (-58%) — impossível de explicar epidemiologicamente; confirma subnotificação tardia do SIM.
+
+---
+
+### Q7 — Materialized View: resumo anual por macrorregião
+
+```sql
+CREATE MATERIALIZED VIEW mv_resumo_macro_anual
+BUILD IMMEDIATE
+REFRESH COMPLETE ON DEMAND
+AS
+SELECT
+    m.co_macro, m.no_macro, m.no_regiao_pais, d.nr_ano,
+    COUNT(*)                                            AS total_obitos,
+    SUM(f.fl_dcv)                                       AS obitos_dcv,
+    ROUND(SUM(f.fl_dcv) * 100.0 / COUNT(*), 2)         AS pct_dcv,
+    AVG(f.idade_anos)                                   AS idade_media
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+JOIN dim_data d      ON f.sk_data      = d.sk_data
+GROUP BY m.co_macro, m.no_macro, m.no_regiao_pais, d.nr_ano;
+```
+
+Para consultar:
+```sql
+SELECT * FROM mv_resumo_macro_anual ORDER BY no_regiao_pais, nr_ano;
+```
+
+Para atualizar após nova carga ETL:
+```sql
+EXEC DBMS_MVIEW.REFRESH('MV_RESUMO_MACRO_ANUAL', 'C');
+```
+
+**Técnica:** Uma Materialized View (MV) armazena fisicamente o resultado da query em disco (aula 05). Diferente de uma VIEW comum, a MV é uma tabela real com dados pré-calculados — consultá-la é instantâneo, independentemente do volume da `FATO_OBITO`. `BUILD IMMEDIATE` popula a MV na criação. `REFRESH COMPLETE ON DEMAND` reconstrói completamente somente quando chamado manualmente — adequado para cargas ETL em lote, onde `ON COMMIT` seria inviável.
+
+**Resultado:** A MV foi criada com sucesso e aparece no SQL Developer sob "Materialized Views" no schema `dw_dcv`. A macrorregião "1ª MACRORREGIAO DE SAUDE" (Nordeste) apresenta o maior `pct_dcv` (29,67%) e a menor `idade_media` geral (63,89 anos) — possivelmente reflexo de alta mortalidade por causas externas em população jovem puxando a média de idade para baixo. A soma de `obitos_dcv` em todas as macrorregiões equivale ao total da Q1 (~382.363), confirmando consistência dos dados.
+
+---
+
+## 6. Considerações Finais
+
+O DW construído integra com sucesso três fontes heterogêneas (CSV, JSON, XML) via SQL nativo do Oracle, usando o código IBGE do município como chave universal. O pipeline ETL em 13 tabelas (5 de staging + 8 do DW) demonstra a separação entre carga e transformação preconizada pela aula 01.
+
+**Sobre a hipótese central:** os dados são consistentes com a hipótese — 73% dos municípios com maiores taxas de mortalidade DCV não têm nenhum hospital. Contudo, a relação não pode ser afirmada categoricamente apenas com esta análise. Municípios pequenos têm taxas infladas por denominadores populacionais minúsculos (problema do denominador), e outros fatores confundidores não estão controlados: estrutura etária, subnotificação regional, acesso a diagnóstico. O DW fornece os dados para a investigação; a confirmação epidemiológica rigorosa exigiria métodos estatísticos adicionais.
+
+**Limitações identificadas:**
+- `populacao_2022` (Censo 2022) é o denominador mais recente disponível, mas os óbitos são de 2025 — pequena defasagem temporal
+- Subnotificação em dezembro do SIM: dados do último mês do ano estão sistematicamente incompletos
+- Municípios com poucos óbitos geram taxas estatisticamente instáveis; um filtro `HAVING COUNT(*) >= 30` tornaria a análise mais robusta para fins epidemiológicos
+- `DIM_ESTABELECIMENTO` usa dados de estrutura hospitalar do CNES sem considerar a capacidade instalada (leitos, especialidades) — apenas a existência do estabelecimento
+
+**Conteúdos das aulas demonstrados:**
+- Aula 01 — ETL em camadas (staging → transformação → DW)
+- Aula 02 — Modelagem relacional, tipos, NULL, `CONNECT BY LEVEL`
+- Aula 03 — SQL/XML com `XMLTABLE`
+- Aula 04 — SQL/JSON com `JSON_TABLE`, `IS JSON`, `BFILE`, `LOADCLOBFROMFILE`
+- Aula 05 — Esquema estrela, surrogate keys, `ROLLUP`, `CUBE`, funções de janela (`RANK`, `LAG`), Materialized View
+
+---
+
+## Apêndice A — Script 00: Schema e configuração inicial
+
+```sql
+-- Executar conectado como admin
+
+CREATE USER dw_dcv IDENTIFIED BY senha123
+    DEFAULT TABLESPACE users
+    TEMPORARY TABLESPACE temp;
+
+GRANT CONNECT, RESOURCE TO dw_dcv;
+GRANT CREATE VIEW TO dw_dcv;
+GRANT CREATE MATERIALIZED VIEW TO dw_dcv;
+GRANT UNLIMITED TABLESPACE TO dw_dcv;
+
+CREATE OR REPLACE DIRECTORY BRONZE_DIR AS
+    'E:\Dropbox\UEL\3 Ano\Integração e Preparação de Dados\Atividades\T1-Integracao_modelos_DW\mort_dcv_bronze';
+
+GRANT READ ON DIRECTORY BRONZE_DIR TO dw_dcv;
+
+-- Verificar suporte a JSON e XML (executar como dw_dcv)
+SELECT JSON_VALUE('{"teste":1}', '$.teste') AS resultado FROM DUAL;
+
+SELECT v FROM XMLTABLE(
+    '/r' PASSING XMLTYPE('<r><v>42</v></r>')
+    COLUMNS v NUMBER PATH 'v'
+);
+```
+
+---
+
+## Apêndice B — Script 01: Staging
+
+```sql
+-- Executar conectado como dw_dcv
+
+-- STG_MORTALIDADE
+CREATE TABLE stg_mortalidade (
+    contador     VARCHAR2(20),
+    dtobito      VARCHAR2(8),
+    tipobito     VARCHAR2(2),
+    codmunres    VARCHAR2(10),
+    codmunocor   VARCHAR2(10),
+    causabas     VARCHAR2(10),
+    linhaa       VARCHAR2(200),
+    linhab       VARCHAR2(200),
+    linhac       VARCHAR2(200),
+    linhad       VARCHAR2(200),
+    sexo         VARCHAR2(2),
+    idade        VARCHAR2(5),
+    racacor      VARCHAR2(2),
+    lococor      VARCHAR2(2),
+    necropsia    VARCHAR2(2)
+);
+-- Carga via Import Wizard (delimitador ";", encoding UTF8, selecionar 15 colunas)
+-- ou SQL*Loader — ver roteiro_implementacao_v2.md para detalhes
+
+-- STG_CNES_RAW
+CREATE TABLE stg_cnes_raw (
+    id       NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    json_doc CLOB,
+    CONSTRAINT chk_json CHECK (json_doc IS JSON)
+);
+
+DECLARE
+    v_file          BFILE := BFILENAME('BRONZE_DIR', 'cnes_estabelecimentos.json');
+    v_clob          CLOB;
+    v_dest_offset   NUMBER := 1;
+    v_src_offset    NUMBER := 1;
+    v_lang_context  NUMBER := DBMS_LOB.DEFAULT_LANG_CTX;
+    v_warning       NUMBER;
+BEGIN
+    DBMS_LOB.CREATETEMPORARY(v_clob, TRUE);
+    DBMS_LOB.OPEN(v_file, DBMS_LOB.LOB_READONLY);
+    DBMS_LOB.LOADCLOBFROMFILE(
+        dest_lob     => v_clob,
+        src_bfile    => v_file,
+        amount       => DBMS_LOB.LOBMAXSIZE,
+        dest_offset  => v_dest_offset,
+        src_offset   => v_src_offset,
+        bfile_csid   => NLS_CHARSET_ID('AL32UTF8'),
+        lang_context => v_lang_context,
+        warning      => v_warning
+    );
+    DBMS_LOB.CLOSE(v_file);
+    INSERT INTO stg_cnes_raw (json_doc) VALUES (v_clob);
+    COMMIT;
+    DBMS_LOB.FREETEMPORARY(v_clob);
+END;
+/
+
+-- STG_CNES_JSON
+CREATE TABLE stg_cnes_json AS
+SELECT jt.*
+FROM stg_cnes_raw,
+     JSON_TABLE(json_doc, '$[*]' COLUMNS (
+         co_cnes             VARCHAR2(20)  PATH '$.CO_CNES',
+         co_ibge             VARCHAR2(10)  PATH '$.CO_IBGE',
+         no_fantasia         VARCHAR2(200) PATH '$.NO_FANTASIA',
+         ds_esfera           VARCHAR2(50)  PATH '$.DS_ESFERA_ADMINISTRATIVA',
+         tp_unidade          VARCHAR2(5)   PATH '$.TP_UNIDADE',
+         st_atend_hospitalar VARCHAR2(5)   PATH '$.ST_ATEND_HOSPITALAR',
+         st_ambulatorial     VARCHAR2(5)   PATH '$.ST_ATEND_AMBULATORIAL',
+         st_centro_cirurgico VARCHAR2(5)   PATH '$.ST_CENTRO_CIRURGICO',
+         co_ambulatorial_sus VARCHAR2(5)   PATH '$.CO_AMBULATORIAL_SUS',
+         nu_latitude         VARCHAR2(30)  PATH '$.NU_LATITUDE',
+         nu_longitude        VARCHAR2(30)  PATH '$.NU_LONGITUDE'
+     )) jt;
+
+-- STG_MACROREGIAO_RAW
+CREATE TABLE stg_macroregiao_raw (
+    id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    xml_doc XMLTYPE
+);
+
+DECLARE
+    v_xml XMLTYPE;
+BEGIN
+    v_xml := XMLTYPE(
+        BFILENAME('BRONZE_DIR', 'macroregiao_de_saude.xml'),
+        NLS_CHARSET_ID('AL32UTF8')
+    );
+    INSERT INTO stg_macroregiao_raw (xml_doc) VALUES (v_xml);
+    COMMIT;
+END;
+/
+
+-- STG_MACROREGIAO
+CREATE TABLE stg_macroregiao AS
+SELECT x.*
+FROM stg_macroregiao_raw,
+     XMLTABLE('/Rows/Row' PASSING xml_doc
+         COLUMNS
+             co_regiao_pais   NUMBER        PATH 'co_regiao_pais',
+             no_regiao_pais   VARCHAR2(20)  PATH 'regiao_pais',
+             sg_uf            VARCHAR2(2)   PATH 'sg_uf',
+             no_uf            VARCHAR2(50)  PATH 'uf',
+             co_macro         NUMBER        PATH 'cod_macrorregiao_de_saude',
+             no_macro         VARCHAR2(100) PATH 'macrorregiao_de_saude',
+             co_regiao_saude  NUMBER        PATH 'cod_regiao_de_saude',
+             no_regiao_saude  VARCHAR2(100) PATH 'regiao_de_saude',
+             co_ibge          VARCHAR2(7)   PATH 'cod_municipio',
+             no_municipio     VARCHAR2(100) PATH 'no_municipio',
+             populacao_2022   NUMBER        PATH 'populacao_ibge_2022'
+     ) x;
+```
+
+---
+
+## Apêndice C — Script 02: Dimensões
+
+```sql
+-- DIM_SEXO
+CREATE TABLE dim_sexo (
+    sk_sexo  NUMBER(3) PRIMARY KEY, co_sexo CHAR(1) NOT NULL, ds_sexo VARCHAR2(20) NOT NULL
+);
+INSERT INTO dim_sexo VALUES (1,'1','Masculino');
+INSERT INTO dim_sexo VALUES (2,'2','Feminino');
+INSERT INTO dim_sexo VALUES (9,'9','Ignorado');
+COMMIT;
+
+-- DIM_RACA_COR
+CREATE TABLE dim_raca_cor (
+    sk_raca_cor NUMBER(3) PRIMARY KEY, co_raca_cor CHAR(1) NOT NULL, ds_raca_cor VARCHAR2(30) NOT NULL
+);
+INSERT INTO dim_raca_cor VALUES (1,'1','Branca');
+INSERT INTO dim_raca_cor VALUES (2,'2','Preta');
+INSERT INTO dim_raca_cor VALUES (3,'3','Amarela');
+INSERT INTO dim_raca_cor VALUES (4,'4','Parda');
+INSERT INTO dim_raca_cor VALUES (5,'5','Indígena');
+INSERT INTO dim_raca_cor VALUES (9,'9','Ignorada');
+COMMIT;
+
+-- DIM_LOCAL_OBITO
+CREATE TABLE dim_local_obito (
+    sk_local NUMBER(3) PRIMARY KEY, co_local CHAR(1) NOT NULL,
+    ds_local VARCHAR2(50) NOT NULL, fl_hospitalar NUMBER(1) DEFAULT 0
+);
+INSERT INTO dim_local_obito VALUES (1,'1','Hospital',1);
+INSERT INTO dim_local_obito VALUES (2,'2','Domicílio',0);
+INSERT INTO dim_local_obito VALUES (3,'3','Via pública',0);
+INSERT INTO dim_local_obito VALUES (4,'4','Outros',0);
+INSERT INTO dim_local_obito VALUES (5,'5','Aldeia indígena',0);
+INSERT INTO dim_local_obito VALUES (6,'6','Estabelecimento social/penal',0);
+INSERT INTO dim_local_obito VALUES (9,'9','Ignorado',0);
+COMMIT;
+
+-- DIM_DATA
+CREATE TABLE dim_data (
+    sk_data NUMBER(8) PRIMARY KEY, dt_completa DATE NOT NULL,
+    nr_ano NUMBER(4), nr_mes NUMBER(2), nr_dia NUMBER(2),
+    nr_trimestre NUMBER(1), nr_semestre NUMBER(1),
+    ds_mes VARCHAR2(15), fl_ano_bissexto NUMBER(1)
+);
+INSERT INTO dim_data
+SELECT
+    TO_NUMBER(TO_CHAR(dt,'YYYYMMDD')), dt,
+    TO_NUMBER(TO_CHAR(dt,'YYYY')), TO_NUMBER(TO_CHAR(dt,'MM')), TO_NUMBER(TO_CHAR(dt,'DD')),
+    CEIL(TO_NUMBER(TO_CHAR(dt,'MM'))/3.0),
+    CASE WHEN TO_NUMBER(TO_CHAR(dt,'MM'))<=6 THEN 1 ELSE 2 END,
+    TO_CHAR(dt,'Month','NLS_DATE_LANGUAGE=PORTUGUESE'),
+    CASE WHEN MOD(TO_NUMBER(TO_CHAR(dt,'YYYY')),4)=0
+          AND (MOD(TO_NUMBER(TO_CHAR(dt,'YYYY')),100)!=0
+            OR MOD(TO_NUMBER(TO_CHAR(dt,'YYYY')),400)=0) THEN 1 ELSE 0 END
+FROM (SELECT DATE '2020-01-01' + LEVEL - 1 AS dt FROM DUAL
+      CONNECT BY LEVEL <= DATE '2025-12-31' - DATE '2020-01-01' + 1);
+COMMIT;
+
+-- DIM_CAUSA_MORTE
+CREATE TABLE dim_causa_morte (
+    sk_causa NUMBER(8) PRIMARY KEY, co_cid10 VARCHAR2(5) NOT NULL UNIQUE,
+    ds_cid10 VARCHAR2(200), co_capitulo_cid CHAR(1), ds_capitulo_cid VARCHAR2(100),
+    fl_dcv NUMBER(1) DEFAULT 0, fl_respiratoria NUMBER(1) DEFAULT 0,
+    fl_neoplasia NUMBER(1) DEFAULT 0, fl_externa NUMBER(1) DEFAULT 0
+);
+INSERT INTO dim_causa_morte (sk_causa, co_cid10, co_capitulo_cid, ds_capitulo_cid,
+                              fl_dcv, fl_respiratoria, fl_neoplasia, fl_externa)
+SELECT ROWNUM, co_cid10, SUBSTR(co_cid10,1,1),
+    CASE SUBSTR(co_cid10,1,1)
+        WHEN 'A' THEN 'Doenças infecciosas e parasitárias'
+        WHEN 'B' THEN 'Doenças infecciosas e parasitárias'
+        WHEN 'C' THEN 'Neoplasias'  WHEN 'D' THEN 'Neoplasias / Sangue'
+        WHEN 'E' THEN 'Doenças endócrinas e metabólicas'
+        WHEN 'F' THEN 'Transtornos mentais'
+        WHEN 'G' THEN 'Doenças do sistema nervoso'
+        WHEN 'H' THEN 'Doenças do olho / ouvido'
+        WHEN 'I' THEN 'Doenças do aparelho circulatório'
+        WHEN 'J' THEN 'Doenças do aparelho respiratório'
+        WHEN 'K' THEN 'Doenças do aparelho digestivo'
+        WHEN 'L' THEN 'Doenças da pele'
+        WHEN 'M' THEN 'Doenças do sistema osteomuscular'
+        WHEN 'N' THEN 'Doenças do aparelho geniturinário'
+        WHEN 'O' THEN 'Gravidez, parto e puerpério'
+        WHEN 'P' THEN 'Afecções perinatais'
+        WHEN 'Q' THEN 'Malformações congênitas'
+        WHEN 'R' THEN 'Sintomas e sinais mal definidos'
+        WHEN 'S' THEN 'Lesões e envenenamentos'
+        WHEN 'T' THEN 'Causas externas (complementar)'
+        WHEN 'V' THEN 'Causas externas'  WHEN 'W' THEN 'Causas externas'
+        WHEN 'X' THEN 'Causas externas'  WHEN 'Y' THEN 'Causas externas'
+        WHEN 'Z' THEN 'Fatores influenciando saúde'
+        ELSE 'Ignorado / Não classificado'
+    END,
+    CASE WHEN REGEXP_LIKE(co_cid10,'^I[0-9]') THEN 1 ELSE 0 END,
+    CASE WHEN REGEXP_LIKE(co_cid10,'^J[0-9]') THEN 1 ELSE 0 END,
+    CASE WHEN REGEXP_LIKE(co_cid10,'^[CD][0-9]') THEN 1 ELSE 0 END,
+    CASE WHEN REGEXP_LIKE(co_cid10,'^[VWXY][0-9]') THEN 1 ELSE 0 END
+FROM (SELECT DISTINCT TRIM(REPLACE(UPPER(causabas),'*','')) AS co_cid10
+      FROM stg_mortalidade
+      WHERE TRIM(causabas) IS NOT NULL
+        AND TRIM(causabas) NOT IN ('000','999'));
+INSERT INTO dim_causa_morte (sk_causa, co_cid10, co_capitulo_cid, ds_capitulo_cid)
+VALUES (0, '999', '9', 'Causa ignorada ou não informada');
+COMMIT;
+
+-- DIM_MUNICIPIO
+CREATE TABLE dim_municipio (
+    sk_municipio NUMBER(8) PRIMARY KEY, co_ibge CHAR(6) NOT NULL UNIQUE,
+    no_municipio VARCHAR2(100), sg_uf CHAR(2), no_uf VARCHAR2(50),
+    co_regiao_saude NUMBER(6), no_regiao_saude VARCHAR2(100),
+    co_macro NUMBER(6), no_macro VARCHAR2(100),
+    co_regiao_pais NUMBER(2), no_regiao_pais VARCHAR2(20),
+    populacao_2022 NUMBER(10)
+);
+INSERT INTO dim_municipio (sk_municipio, co_ibge, no_municipio, sg_uf, no_uf,
+    co_regiao_saude, no_regiao_saude, co_macro, no_macro,
+    co_regiao_pais, no_regiao_pais, populacao_2022)
+SELECT ROWNUM, LPAD(TO_NUMBER(TRIM(co_ibge)),6,'0'),
+    TRIM(SUBSTR(no_municipio,6)), sg_uf, no_uf,
+    co_regiao_saude, no_regiao_saude, co_macro, no_macro,
+    co_regiao_pais, no_regiao_pais, populacao_2022
+FROM stg_macroregiao WHERE TRIM(co_ibge) IS NOT NULL;
+COMMIT;
+
+-- DIM_ESTABELECIMENTO
+CREATE TABLE dim_estabelecimento (
+    co_ibge CHAR(6) PRIMARY KEY,
+    qtd_total NUMBER(8) DEFAULT 0, qtd_hospitais NUMBER(8) DEFAULT 0,
+    qtd_amb_sus NUMBER(8) DEFAULT 0, qtd_cirurgico NUMBER(8) DEFAULT 0,
+    fl_tem_hospital NUMBER(1) DEFAULT 0
+);
+INSERT INTO dim_estabelecimento
+SELECT LPAD(TO_NUMBER(TRIM(co_ibge)),6,'0'),
+    COUNT(*),
+    SUM(CASE WHEN TRIM(st_atend_hospitalar) IN ('1','1.0') THEN 1 ELSE 0 END),
+    SUM(CASE WHEN UPPER(TRIM(co_ambulatorial_sus))='SIM' THEN 1 ELSE 0 END),
+    SUM(CASE WHEN TRIM(st_centro_cirurgico) IN ('1','1.0') THEN 1 ELSE 0 END),
+    MAX(CASE WHEN TRIM(st_atend_hospitalar) IN ('1','1.0') THEN 1 ELSE 0 END)
+FROM stg_cnes_json
+WHERE TRIM(co_ibge) IS NOT NULL AND REGEXP_LIKE(TRIM(co_ibge),'^[0-9]+$')
+GROUP BY LPAD(TO_NUMBER(TRIM(co_ibge)),6,'0');
+COMMIT;
+```
+
+---
+
+## Apêndice D — Script 03: Fato e Script 04: Índices
+
+```sql
+-- FATO_OBITO
+CREATE TABLE fato_obito (
+    sk_obito NUMBER(12) PRIMARY KEY,
+    sk_municipio NUMBER(8) REFERENCES dim_municipio(sk_municipio),
+    sk_data      NUMBER(8) REFERENCES dim_data(sk_data),
+    sk_causa     NUMBER(8) REFERENCES dim_causa_morte(sk_causa),
+    sk_sexo      NUMBER(3) REFERENCES dim_sexo(sk_sexo),
+    sk_raca_cor  NUMBER(3) REFERENCES dim_raca_cor(sk_raca_cor),
+    sk_local     NUMBER(3) REFERENCES dim_local_obito(sk_local),
+    idade_anos NUMBER(5,1), fl_dcv NUMBER(1) DEFAULT 0,
+    fl_hospitalar NUMBER(1) DEFAULT 0, fl_necropsia NUMBER(1) DEFAULT 0,
+    nk_contador NUMBER(12)
+);
+
+INSERT INTO fato_obito (
+    sk_obito, sk_municipio, sk_data, sk_causa,
+    sk_sexo, sk_raca_cor, sk_local,
+    idade_anos, fl_dcv, fl_hospitalar, fl_necropsia, nk_contador
+)
+SELECT
+    ROWNUM,
+    m.sk_municipio,
+    TO_NUMBER(TO_CHAR(TO_DATE(s.dtobito,'DDMMYYYY'),'YYYYMMDD')),
+    NVL(c.sk_causa,0), NVL(sx.sk_sexo,9), NVL(rc.sk_raca_cor,9), NVL(lo.sk_local,9),
+    CASE
+        WHEN SUBSTR(s.idade,1,1)='4' THEN TO_NUMBER(SUBSTR(s.idade,2))
+        WHEN SUBSTR(s.idade,1,1)='3' THEN ROUND(TO_NUMBER(SUBSTR(s.idade,2))/12.0,1)
+        WHEN SUBSTR(s.idade,1,1) IN ('1','2') THEN 0
+        WHEN SUBSTR(s.idade,1,1)='5' THEN TO_NUMBER(SUBSTR(s.idade,2))+100
+        ELSE NULL
+    END,
+    CASE WHEN REGEXP_LIKE(TRIM(REPLACE(UPPER(s.causabas),'*','')),'^I[0-9]') THEN 1 ELSE 0 END,
+    CASE WHEN TRIM(s.lococor)='1' THEN 1 ELSE 0 END,
+    CASE WHEN UPPER(TRIM(s.necropsia))='S' THEN 1 ELSE 0 END,
+    TO_NUMBER(s.contador)
+FROM stg_mortalidade s
+JOIN dim_municipio m ON LPAD(TO_NUMBER(TRIM(s.codmunres)),6,'0') = m.co_ibge
+LEFT JOIN dim_causa_morte c ON TRIM(REPLACE(UPPER(s.causabas),'*','')) = c.co_cid10
+LEFT JOIN dim_sexo sx ON TRIM(s.sexo) = sx.co_sexo
+LEFT JOIN dim_raca_cor rc ON TRIM(s.racacor) = rc.co_raca_cor
+LEFT JOIN dim_local_obito lo ON TRIM(s.lococor) = lo.co_local
+WHERE TRIM(s.codmunres) IS NOT NULL
+  AND TRIM(s.codmunres) != '000000'
+  AND REGEXP_LIKE(TRIM(s.codmunres),'^[0-9]+$')
+  AND REGEXP_LIKE(s.dtobito,'^\d{8}$')
+  AND TRIM(s.tipobito) = '2';
+COMMIT;
+
+-- ÍNDICES
+CREATE INDEX idx_fato_municipio ON fato_obito(sk_municipio);
+CREATE INDEX idx_fato_data      ON fato_obito(sk_data);
+CREATE INDEX idx_fato_causa     ON fato_obito(sk_causa);
+CREATE INDEX idx_fato_fl_dcv    ON fato_obito(fl_dcv);
+-- Nota: não criar índice em dim_municipio(co_ibge) — Oracle já indexa automaticamente PKs
+```
+
+---
+
+## Apêndice E — Script 05: Consultas Q1–Q6 e Script 06: Materialized View
+
+```sql
+-- Q1 — ROLLUP
+SELECT d.nr_ano, d.nr_mes, m.no_regiao_pais,
+       COUNT(*) AS total_obitos, SUM(f.fl_dcv) AS obitos_dcv,
+       ROUND(SUM(f.fl_dcv)*100.0/COUNT(*),2) AS pct_dcv
+FROM fato_obito f
+JOIN dim_data d      ON f.sk_data      = d.sk_data
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+WHERE d.nr_ano >= 2024
+GROUP BY ROLLUP(d.nr_ano, d.nr_mes, m.no_regiao_pais)
+ORDER BY d.nr_ano, d.nr_mes, m.no_regiao_pais;
+
+-- Q2 — CUBE
+SELECT NVL(m.no_regiao_pais,'TOTAL BRASIL') AS regiao,
+       NVL(m.no_macro,'TOTAL MACRO') AS macrorregiao,
+       NVL(s.ds_sexo,'AMBOS SEXOS') AS sexo,
+       COUNT(*) AS total_obitos_dcv, TRUNC(AVG(f.idade_anos)) AS idade_media_obito
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+JOIN dim_sexo s      ON f.sk_sexo      = s.sk_sexo
+WHERE f.fl_dcv = 1 AND s.co_sexo IN ('1','2')
+GROUP BY CUBE(m.no_regiao_pais, m.no_macro, s.ds_sexo);
+
+-- Q3 — Taxa DCV × estrutura hospitalar
+SELECT m.no_municipio, m.no_uf, m.no_macro, e.qtd_hospitais,
+       COUNT(*) AS obitos_dcv,
+       ROUND(COUNT(*)*100000.0/NULLIF(m.populacao_2022,0),2) AS taxa_dcv_por_100k,
+       ROUND(e.qtd_hospitais*100000.0/NULLIF(m.populacao_2022,0),4) AS hospitais_por_100k
+FROM fato_obito f
+JOIN dim_municipio m       ON f.sk_municipio = m.sk_municipio
+JOIN dim_estabelecimento e ON m.co_ibge      = e.co_ibge
+WHERE f.fl_dcv = 1 AND m.populacao_2022 > 0
+GROUP BY m.no_municipio, m.no_uf, m.no_macro, e.qtd_hospitais, m.populacao_2022
+ORDER BY taxa_dcv_por_100k DESC
+FETCH FIRST 30 ROWS ONLY;
+
+-- Q4 — RANK
+SELECT m.no_municipio, m.sg_uf, m.no_macro,
+       COUNT(*) AS obitos_dcv,
+       ROUND(COUNT(*)*100000.0/NULLIF(m.populacao_2022,0),2) AS taxa_dcv_por_100k,
+       RANK() OVER (PARTITION BY m.no_macro
+                   ORDER BY COUNT(*)*100000.0/NULLIF(m.populacao_2022,0) DESC) AS rank_na_macro,
+       RANK() OVER (ORDER BY COUNT(*)*100000.0/NULLIF(m.populacao_2022,0) DESC) AS rank_nacional
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+WHERE f.fl_dcv = 1
+GROUP BY m.no_municipio, m.sg_uf, m.no_macro, m.co_ibge, m.populacao_2022
+ORDER BY rank_nacional
+FETCH FIRST 50 ROWS ONLY;
+
+-- Q5 — CASE + GROUP BY
+SELECT s.ds_sexo, rc.ds_raca_cor,
+       CASE WHEN f.idade_anos < 40 THEN 'A. Menos de 40 anos'
+            WHEN f.idade_anos < 60 THEN 'B. 40-59 anos'
+            WHEN f.idade_anos < 70 THEN 'C. 60-69 anos'
+            WHEN f.idade_anos < 80 THEN 'D. 70-79 anos'
+            ELSE                        'E. 80 anos ou mais' END AS faixa_etaria,
+       COUNT(*) AS total_obitos,
+       ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER (),2) AS pct_total
+FROM fato_obito f
+JOIN dim_sexo s      ON f.sk_sexo     = s.sk_sexo
+JOIN dim_raca_cor rc ON f.sk_raca_cor = rc.sk_raca_cor
+WHERE f.fl_dcv = 1 AND s.co_sexo != '9'
+GROUP BY s.ds_sexo, rc.ds_raca_cor,
+    CASE WHEN f.idade_anos < 40 THEN 'A. Menos de 40 anos'
+         WHEN f.idade_anos < 60 THEN 'B. 40-59 anos'
+         WHEN f.idade_anos < 70 THEN 'C. 60-69 anos'
+         WHEN f.idade_anos < 80 THEN 'D. 70-79 anos'
+         ELSE                        'E. 80 anos ou mais' END
+ORDER BY s.ds_sexo, faixa_etaria;
+
+-- Q6 — LAG
+SELECT m.no_macro, d.nr_ano, d.nr_mes,
+       COUNT(*) AS obitos_dcv,
+       LAG(COUNT(*)) OVER (PARTITION BY m.no_macro ORDER BY d.nr_ano, d.nr_mes) AS obitos_mes_anterior,
+       COUNT(*) - LAG(COUNT(*)) OVER (PARTITION BY m.no_macro ORDER BY d.nr_ano, d.nr_mes) AS variacao_absoluta
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+JOIN dim_data d      ON f.sk_data      = d.sk_data
+WHERE f.fl_dcv = 1
+GROUP BY m.no_macro, d.nr_ano, d.nr_mes
+ORDER BY m.no_macro, d.nr_ano, d.nr_mes;
+
+-- Q7 — MATERIALIZED VIEW
+CREATE MATERIALIZED VIEW mv_resumo_macro_anual
+BUILD IMMEDIATE REFRESH COMPLETE ON DEMAND
+AS
+SELECT m.co_macro, m.no_macro, m.no_regiao_pais, d.nr_ano,
+       COUNT(*) AS total_obitos, SUM(f.fl_dcv) AS obitos_dcv,
+       ROUND(SUM(f.fl_dcv)*100.0/COUNT(*),2) AS pct_dcv,
+       AVG(f.idade_anos) AS idade_media
+FROM fato_obito f
+JOIN dim_municipio m ON f.sk_municipio = m.sk_municipio
+JOIN dim_data d      ON f.sk_data      = d.sk_data
+GROUP BY m.co_macro, m.no_macro, m.no_regiao_pais, d.nr_ano;
+
+SELECT * FROM mv_resumo_macro_anual ORDER BY no_regiao_pais, nr_ano;
+
+EXEC DBMS_MVIEW.REFRESH('MV_RESUMO_MACRO_ANUAL', 'C');
+```
