@@ -1,7 +1,7 @@
 -- =============================================================
 -- 00_schema.sql
 -- Criar schema dw_dcv e configurar DIRECTORY de arquivos
--- Executar conectado como cp-office (admin)
+-- Executar conectado como (admin)
 -- =============================================================
 
 -- 1. Criar usuário/schema dedicado ao projeto
