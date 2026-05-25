@@ -132,5 +132,5 @@ CREATE OR REPLACE DIRECTORY BRONZE_DIR AS 'C:\seu\caminho\para\os\dados';
 - **1.505.609** óbitos em 2025; **382.363 (25,4%)** por DCV
 - Pico de mortalidade DCV em julho (26,27%); queda em dezembro (subnotificação SIM)
 - Homens morrem de DCV **~5 anos mais cedo** do que mulheres (universal em todas as macrorregiões)
-- **73%** dos 30 municípios com maior taxa DCV não têm nenhum hospital — consistente com a hipótese
+- **73%** dos 30 municípios com maior taxa DCV não têm nenhum hospital, consistente com a hipótese
 - RS domina o top 50 de municípios com maior taxa (~50% dos municípios)
