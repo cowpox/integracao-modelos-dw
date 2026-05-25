@@ -110,7 +110,7 @@ O campo `fl_dcv` é uma flag binária pré-calculada na carga: vale `1` quando o
 
 O campo `nk_contador` mantém a chave natural do SIM para rastreabilidade, permitindo localizar o registro original na fonte se necessário.
 
-**Resultado da carga:** ~1.505.000 óbitos. Os filtros de qualidade descartaram registros sem município válido e mantiveram apenas óbitos não-fetais (`tipobito = '2'`), excluindo os registros fetais.
+**Resultado da carga:** 1.505.609 óbitos (staging: 1.507.424). Os filtros de qualidade descartaram 1.815 registros correspondentes a 23 códigos IBGE sem correspondência na `DIM_MUNICIPIO`, provavelmente municípios extintos, fusionados ou territórios não cobertos pelo XML de macrorregiões. O CSV do SIM utilizado não continha óbitos fetais (`tipobito = '1'`), portanto o filtro `tipobito = '2'` não descartou registros neste dataset.
 
 ### 3.3 Dimensões
 
