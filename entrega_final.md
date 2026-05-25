@@ -1,7 +1,8 @@
 # T1 — Integração de Modelos em Data Warehouse e Consultas Analíticas
 
 **Disciplina:** Integração e Preparação de Dados  
-**Aluno:** Adriano Lucio  
+**Aluno:** Adriano Lúcio Uchôa Brandão  
+**Aluno:** Herik Daurizio Ricardo  
 **Professor:** Daniel dos Santos Kaster  
 **Instituição:** Universidade Estadual de Londrina — UEL  
 **Data de entrega:** 25/05/2026
@@ -27,7 +28,7 @@ Três datasets foram utilizados, cada um em um formato diferente:
 
 ### 2.1 Mortalidade_Geral_2025 — CSV
 
-**Arquivo:** `Mortalidade_Geral_2025.csv` (501 MB)  
+**Arquivo:** `Mortalidade_Geral_2025.csv` (501 MB) — [Download](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/SIM/csv/Mortalidade_Geral_2025_csv.zip) · [Dicionário de dados](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/SIM/Dicionario_SIM_2025.pdf)  
 **Papel:** fonte principal da tabela fato — 1 linha por óbito registrado no SIM (Sistema de Informação sobre Mortalidade), cobrindo todo o ano de 2025.
 
 O campo `CAUSABAS` contém o CID-10 da causa básica do óbito. Filtrando os CIDs do capítulo I (I00–I99 — Doenças do Aparelho Circulatório), obtemos os óbitos por DCV. O campo `CODMUNRES` é o código IBGE do município de residência do falecido — chave de integração com as demais fontes.
@@ -42,7 +43,7 @@ O CSV foi preferido ao JSON e XML do mesmo dataset (2 GB e 2,3 GB, respectivamen
 
 ### 2.2 cnes_estabelecimentos — JSON
 
-**Arquivo:** `cnes_estabelecimentos.json` (581 MB)  
+**Arquivo:** `cnes_estabelecimentos.json` (581 MB) — [Download](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/CNES/cnes_estabelecimentos_json.zip)  
 **Papel:** fonte da estrutura de saúde por município — quantidade de hospitais e outros estabelecimentos cadastrados no CNES (Cadastro Nacional de Estabelecimentos de Saúde).
 
 O JSON foi escolhido em detrimento do CSV (211 MB) para demonstrar o uso de `SQL/JSON` do Oracle, conforme conteúdo da aula 04. A carga foi feita via `DBMS_LOB.LOADCLOBFROMFILE` (com `bfile_csid` para tratar encoding UTF-8) e normalização com `JSON_TABLE`.
@@ -51,7 +52,7 @@ O JSON foi escolhido em detrimento do CSV (211 MB) para demonstrar o uso de `SQL
 
 ### 2.3 macroregiao_de_saude — XML
 
-**Arquivo:** `macroregiao_de_saude.xml` (2,6 MB)  
+**Arquivo:** `macroregiao_de_saude.xml` (2,6 MB) — [Download](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/dbgeral/macroregiao_de_saude_xml.zip)  
 **Papel:** fonte da dimensão geográfica — hierarquia completa (município → região de saúde → macrorregião → grande região do país) e o campo `populacao_ibge_2022`, que é o denominador do cálculo de taxa por 100 mil habitantes.
 
 O XML foi escolhido por ser o menor arquivo disponível, ideal para uma demonstração limpa de `SQL/XML` com `XMLTABLE` (aula 03). A estrutura é `<Rows><Row>...</Row></Rows>` — mapeada com XPath `/Rows/Row`.

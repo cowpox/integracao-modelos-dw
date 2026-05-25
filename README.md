@@ -2,6 +2,7 @@
 
 **Disciplina:** Integração e Preparação de Dados — UEL 2026  
 **Aluno:** Adriano Lúcio Uchôa Brandão  
+**Aluno:** Herik Daurizio Ricardo  
 **Professor:** Daniel dos Santos Kaster
 
 ---
@@ -22,13 +23,15 @@ Data Warehouse relacional construído no Oracle Database, integrando três fonte
 
 ## Fontes de dados
 
-| Dataset | Formato | Tamanho | Papel |
-|---|---|---|---|
-| Mortalidade_Geral_2025 | CSV | 501 MB | Fonte da tabela fato — ~1,5 M óbitos |
-| cnes_estabelecimentos | JSON | 581 MB | Estrutura de saúde por município (CNES) |
-| macroregiao_de_saude | XML | 2,6 MB | Hierarquia geográfica + população 2022 |
+| Dataset | Formato | Tamanho | Papel | Download |
+|---|---|---|---|---|
+| Mortalidade_Geral_2025 | CSV | 501 MB | Fonte da tabela fato — ~1,5 M óbitos | [Download](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/SIM/csv/Mortalidade_Geral_2025_csv.zip) |
+| cnes_estabelecimentos | JSON | 581 MB | Estrutura de saúde por município (CNES) | [Download](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/CNES/cnes_estabelecimentos_json.zip) |
+| macroregiao_de_saude | XML | 2,6 MB | Hierarquia geográfica + população 2022 | [Download](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/dbgeral/macroregiao_de_saude_xml.zip) |
 
-> **Nota:** os arquivos de dados não estão neste repositório por conta do tamanho. As fontes originais são públicas (DATASUS / DataSUS CNES).
+> **Dicionário de dados SIM:** [Dicionario_SIM_2025.pdf](https://s3.sa-east-1.amazonaws.com/ckan.saude.gov.br/SIM/Dicionario_SIM_2025.pdf)
+>
+> **Nota:** os arquivos de dados não estão neste repositório por conta do tamanho. Todas as fontes são públicas (DATASUS / DataSUS CNES).
 
 ---
 
@@ -79,7 +82,7 @@ Esquema estrela com 1 tabela fato, 6 dimensões e 1 outrigger.
 
 ### Pré-requisitos
 
-- Oracle Database (testado com Oracle XE / Oracle 19c+)
+- Oracle Database (testado com Oracle XE / Oracle 21c+)
 - SQL Developer (ou qualquer cliente Oracle)
 - Acesso administrativo para criar usuário/schema
 
@@ -89,7 +92,7 @@ Execute os scripts na sequência numérica dentro do SQL Developer:
 
 | Script | Conexão | Modo |
 |---|---|---|
-| `00_schema.sql` (parte 1: CREATE USER) | `cp-office` (admin) | F5 |
+| `00_schema.sql` (parte 1: CREATE USER) | (admin) | F5 |
 | `00_schema.sql` (parte 2: teste JSON/XML) | `dw_dcv` | F9 |
 | `01_staging.sql` | `dw_dcv` | F5 |
 | `02_dimensoes.sql` | `dw_dcv` | F5 |
