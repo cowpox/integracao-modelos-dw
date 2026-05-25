@@ -366,6 +366,31 @@ ORDER BY d.nr_ano, d.nr_mes, m.no_regiao_pais;
 
 **Resultado:** Total de 1.505.609 óbitos em 2025; 382.363 (25,4%) por DCV. Pico de mortalidade em julho (26,27% DCV) e queda pronunciada em dezembro (24,35%, provavelmente devido à subnotificação, já que registros de dezembro entram no SIM em janeiro ou fevereiro do ano seguinte). O Sudeste apresenta o maior percentual de DCV (~27%), o Norte o menor (~23%).
 
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q1.pdf](results/Q1.pdf))*:
+
+| NR_ANO | NR_MES | NO_REGIAO_PAIS | TOTAL_OBITOS | OBITOS_DCV | PCT_DCV |
+|--------|--------|----------------|--------------|------------|---------|
+| 2025 | 1 | Centro-Oeste | 8745 | 2217 | 25.35 |
+| 2025 | 1 | Nordeste | 32754 | 8327 | 25.42 |
+| 2025 | 1 | Norte | 8301 | 2071 | 24.95 |
+| 2025 | 1 | Sudeste | 55917 | 14195 | 25.39 |
+| 2025 | 1 | Sul | 18283 | 4373 | 23.92 |
+| 2025 | 1 | (null) | 124000 | 31183 | 25.15 |
+| 2025 | 2 | Centro-Oeste | 7730 | 1974 | 25.54 |
+| 2025 | 2 | Nordeste | 29231 | 7366 | 25.20 |
+| 2025 | 2 | Norte | 7470 | 1905 | 25.50 |
+| 2025 | 2 | Sudeste | 50496 | 12582 | 24.92 |
+| 2025 | 2 | Sul | 16600 | 4040 | 24.34 |
+| 2025 | 2 | (null) | 111527 | 27867 | 24.99 |
+| 2025 | 3 | Centro-Oeste | 8431 | 2080 | 24.67 |
+| 2025 | 3 | Nordeste | 32666 | 8460 | 25.90 |
+| 2025 | 3 | Norte | 8212 | 2030 | 24.72 |
+| 2025 | 3 | Sudeste | 54635 | 13647 | 24.98 |
+| 2025 | 3 | Sul | 18525 | 4347 | 23.47 |
+| 2025 | 3 | (null) | 122469 | 30564 | 24.96 |
+| 2025 | 4 | Centro-Oeste | 8721 | 2083 | 23.88 |
+| 2025 | 4 | Nordeste | 31906 | 8197 | 25.69 |
+
 ---
 
 ### Q2 — Comparação multidimensional (CUBE)
@@ -388,6 +413,31 @@ GROUP BY CUBE(m.no_regiao_pais, m.no_macro, s.ds_sexo);
 **Técnica:** `CUBE` (aula 05) gera automaticamente todas as combinações possíveis de subtotal entre as dimensões utilizadas, diferente do `ROLLUP` que pressupõe hierarquia. É adequado aqui porque região, macrorregião e sexo não têm relação hierárquica entre si, fazendo com que todas as combinações de subtotais tenham valor analítico. `NVL` converte os NULLs gerados pelo CUBE em rótulos legíveis. O filtro `co_sexo IN ('1', '2')` exclui o código 9 (ignorado) para que os subtotais de "AMBOS SEXOS" somem exatamente Masculino + Feminino.
 
 **Resultado:** 382.337 óbitos DCV com sexo definido. Feminino: 179.395 óbitos, idade média 75 anos. Masculino: 202.942 óbitos, idade média 70 anos. O gap de 5 anos é consistente em todas as macrorregiões, refletindo o efeito cardioprotetor do estrogênio nas mulheres até a menopausa. Nas macrorregiões da periferia de São Paulo (RRAS3, RRAS4), o masculino morre de DCV em média com 65 anos; no interior do Rio Grande do Sul (VALES, MISSIONEIRA), com 72 anos.
+
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q2.pdf](results/Q2.pdf))*:
+
+| REGIAO | MACRORREGIAO | SEXO | TOTAL_OBITOS_DCV | IDADE_MEDIA_OBITO |
+|--------|--------------|------|-----------------|-------------------|
+| TOTAL BRASIL | TOTAL MACRO | AMBOS SEXOS | 382337 | 72 |
+| TOTAL BRASIL | TOTAL MACRO | Feminino | 179395 | 75 |
+| TOTAL BRASIL | TOTAL MACRO | Masculino | 202942 | 70 |
+| TOTAL BRASIL | SUL | AMBOS SEXOS | 8088 | 73 |
+| TOTAL BRASIL | SUL | Feminino | 3791 | 76 |
+| TOTAL BRASIL | SUL | Masculino | 4297 | 70 |
+| TOTAL BRASIL | LESTE | AMBOS SEXOS | 2033 | 74 |
+| TOTAL BRASIL | LESTE | Feminino | 933 | 76 |
+| TOTAL BRASIL | LESTE | Masculino | 1100 | 72 |
+| TOTAL BRASIL | NORTE | AMBOS SEXOS | 5081 | 74 |
+| TOTAL BRASIL | NORTE | Feminino | 2395 | 76 |
+| TOTAL BRASIL | NORTE | Masculino | 2686 | 71 |
+| TOTAL BRASIL | OESTE | AMBOS SEXOS | 2746 | 73 |
+| TOTAL BRASIL | OESTE | Feminino | 1250 | 75 |
+| TOTAL BRASIL | OESTE | Masculino | 1496 | 71 |
+| TOTAL BRASIL | RRAS1 | AMBOS SEXOS | 6599 | 71 |
+| TOTAL BRASIL | RRAS1 | Feminino | 3059 | 75 |
+| TOTAL BRASIL | RRAS1 | Masculino | 3540 | 67 |
+| TOTAL BRASIL | RRAS2 | AMBOS SEXOS | 5865 | 69 |
+| TOTAL BRASIL | RRAS2 | Feminino | 2754 | 72 |
 
 ---
 
@@ -417,6 +467,31 @@ A taxa por 100 mil habitantes é o indicador epidemiológico padrão para compar
 
 **Resultado:** Os 30 municípios com maiores taxas são quase todos municípios pequenos do Sul, visto que 22 dos 30 (73%) têm zero hospitais. O padrão é consistente com a hipótese. Porém, há limitação estatística importante: Flora Rica (SP) tem apenas 14 óbitos sobre ~1.500 habitantes, gerando taxa de 941/100k. O valor é matematicamente correto, mas epidemiologicamente instável. Para análise rigorosa, um filtro mínimo de eventos (`HAVING COUNT(*) >= 30`) reduziria esse ruído.
 
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q3.pdf](results/Q3.pdf))*:
+
+| NO_MUNICIPIO | NO_UF | NO_MACRO | QTD_HOSPITAIS | OBITOS_DCV | TAXA_DCV_POR_100K | HOSPITAIS_POR_100K |
+|---|---|---|---:|---:|---:|---:|
+| FLORA RICA | São Paulo | RRAS11 | 0 | 14 | 941.49 | 0 |
+| NOVA PALMA | Rio Grande do Sul | CENTRO-OESTE | 1 | 36 | 644.47 | 17.9019 |
+| UNIAO DA SERRA | Rio Grande do Sul | SERRA | 0 | 7 | 598.29 | 0 |
+| CENTENARIO | Rio Grande do Sul | NORTE | 0 | 16 | 586.51 | 0 |
+| SAO JOAO DO POLESINE | Rio Grande do Sul | CENTRO-OESTE | 1 | 15 | 566.25 | 37.7501 |
+| ANAHY | Paraná | MACRORREGIAO OESTE | 0 | 16 | 548.32 | 0 |
+| MIRADOR | Paraná | MACRORREGIONAL NOROESTE | 0 | 12 | 536.19 | 0 |
+| GUARANI DAS MISSOES | Rio Grande do Sul | MISSIONEIRA | 1 | 39 | 525.96 | 13.4862 |
+| ANTONIO PRADO DE MINAS | Minas Gerais | SUDESTE | 0 | 8 | 520.16 | 0 |
+| MONCOES | São Paulo | RRAS12 | 0 | 10 | 516.26 | 0 |
+| ARIRANHA DO IVAI | Paraná | MACRORREGIONAL NORTE | 0 | 12 | 515.24 | 0 |
+| NOVA GUATAPORANGA | São Paulo | RRAS11 | 0 | 11 | 510.20 | 0 |
+| SAO BONIFACIO | Santa Catarina | GRANDE FLORIANOPOLIS | 1 | 15 | 509.16 | 33.9443 |
+| ERVAL GRANDE | Rio Grande do Sul | NORTE | 0 | 25 | 507.10 | 0 |
+| ALOANDIA | Goiás | MACRORREGIAO CENTRO SUDESTE | 1 | 10 | 506.84 | 50.6842 |
+| PAIM FILHO | Rio Grande do Sul | NORTE | 0 | 18 | 495.73 | 27.5406 |
+| SAO MARTINHO DA SERRA | Rio Grande do Sul | CENTRO-OESTE | 0 | 14 | 489.51 | 0 |
+| BARRA BONITA | Santa Catarina | GRANDE OESTE | 0 | 8 | 479.62 | 0 |
+| FLORIANO PEIXOTO | Rio Grande do Sul | NORTE | 0 | 8 | 479.62 | 0 |
+| PARAISO DO SUL | Rio Grande do Sul | CENTRO-OESTE | 1 | 30 | 460.19 | 15.3398 |
+
 
 ---
 
@@ -445,6 +520,31 @@ FETCH FIRST 50 ROWS ONLY;
 **Técnica:** `RANK()` é uma função de janela (window function) que atribui posições sem colapsar linhas, diferentemente do `GROUP BY`. A cláusula `OVER (PARTITION BY m.no_macro ORDER BY ... DESC)` define uma "janela" por macrorregião onde o ranking recomeça do 1. A segunda chamada `RANK() OVER (ORDER BY ... DESC)` sem `PARTITION BY` opera sobre toda a tabela, produzindo o ranking nacional. `RANK()` atribui a mesma posição para empates e pula a posição seguinte (1, 2, 2, 4), mantendo empates na mesma posição do ranking. O campo `m.co_ibge` está no GROUP BY (mas não no SELECT) para diferenciar municípios homônimos em estados diferentes.
 
 **Resultado:** Na posição 18, empate exato entre Barra Bonita (SC) e Floriano Peixoto (RS), ambos com 479,62/100k. `RANK()` atribui 18 para os dois e pula para 20. Floriano Peixoto tem `rank_na_macro = 4` dentro da macrorregião NORTE/RS, mas `rank_nacional = 18`: existem 3 municípios na mesma macro com taxas piores. Isso revela que toda a macrorregião NORTE tem taxas elevadas, não é um outlier isolado. O RS responde por ~50% do top 50 nacional.
+
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q4.pdf](results/Q4.pdf))*:
+
+| NO_MUNICIPIO | SG_UF | NO_MACRO | OBITOS_DCV | TAXA_DCV_POR_100K | RANK_NA_MACRO | RANK_NACIONAL |
+|---|:---:|---|---:|---:|---:|---:|
+| FLORA RICA | SP | RRAS11 | 14 | 941.49 | 1 | 1 |
+| NOVA PALMA | RS | CENTRO-OESTE | 36 | 644.47 | 1 | 2 |
+| UNIAO DA SERRA | RS | SERRA | 7 | 598.29 | 1 | 3 |
+| CENTENARIO | RS | NORTE | 16 | 586.51 | 1 | 4 |
+| SAO JOAO DO POLESINE | RS | CENTRO-OESTE | 15 | 566.25 | 2 | 5 |
+| ANAHY | PR | MACRORREGIAO OESTE | 16 | 548.32 | 1 | 6 |
+| MIRADOR | PR | MACRORREGIONAL NOROESTE | 12 | 536.19 | 1 | 7 |
+| GUARANI DAS MISSOES | RS | MISSIONEIRA | 39 | 525.96 | 1 | 8 |
+| ANTONIO PRADO DE MINAS | MG | SUDESTE | 8 | 520.16 | 1 | 9 |
+| MONCOES | SP | RRAS12 | 10 | 516.26 | 1 | 10 |
+| ARIRANHA DO IVAI | PR | MACRORREGIONAL NORTE | 12 | 515.24 | 1 | 11 |
+| NOVA GUATAPORANGA | SP | RRAS11 | 11 | 510.20 | 2 | 12 |
+| SAO BONIFACIO | SC | GRANDE FLORIANOPOLIS | 15 | 509.16 | 1 | 13 |
+| ERVAL GRANDE | RS | NORTE | 25 | 507.10 | 2 | 14 |
+| ALOANDIA | GO | MACRORREGIAO CENTRO SUDESTE | 10 | 506.84 | 1 | 15 |
+| PAIM FILHO | RS | NORTE | 18 | 495.73 | 3 | 16 |
+| SAO MARTINHO DA SERRA | RS | CENTRO-OESTE | 14 | 489.51 | 3 | 17 |
+| BARRA BONITA | SC | GRANDE OESTE | 8 | 479.62 | 1 | 18 |
+| FLORIANO PEIXOTO | RS | NORTE | 8 | 479.62 | 4 | 18 |
+| PARAISO DO SUL | RS | CENTRO-OESTE | 30 | 460.19 | 4 | 20 |
 
 ---
 
@@ -483,6 +583,31 @@ ORDER BY s.ds_sexo, faixa_etaria;
 
 **Resultado:** O achado mais relevante é a inversão após os 80 anos: das faixas 40–79, os homens morrem mais por DCV (razão de até 1,75 na faixa 40-59). Acima dos 80, as mulheres morrem mais, não por maior vulnerabilidade cardiovascular, mas porque chegam em maior número ao grupo 80+ (maior expectativa de vida). O maior grupo isolado é "Feminino Branca 80+" com 47.818 óbitos (12,51% do total DCV).
 
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q5.pdf](results/Q5.pdf))*:
+
+| DS_SEXO | DS_RACA_COR | FAIXA_ETARIA | TOTAL_OBITOS | PCT_TOTAL |
+|---------|-------------|--------------|-------------:|----------:|
+| Feminino | Amarela | A. Menos de 40 anos | 11 | 0.00 |
+| Feminino | Branca | A. Menos de 40 anos | 1432 | 0.37 |
+| Feminino | Ignorada | A. Menos de 40 anos | 44 | 0.01 |
+| Feminino | Indígena | A. Menos de 40 anos | 22 | 0.01 |
+| Feminino | Parda | A. Menos de 40 anos | 1880 | 0.49 |
+| Feminino | Preta | A. Menos de 40 anos | 444 | 0.12 |
+| Feminino | Amarela | B. 40-59 anos | 79 | 0.02 |
+| Feminino | Branca | B. 40-59 anos | 8374 | 2.19 |
+| Feminino | Ignorada | B. 40-59 anos | 211 | 0.06 |
+| Feminino | Indígena | B. 40-59 anos | 64 | 0.02 |
+| Feminino | Parda | B. 40-59 anos | 9994 | 2.61 |
+| Feminino | Preta | B. 40-59 anos | 2888 | 0.76 |
+| Feminino | Amarela | C. 60-69 anos | 120 | 0.03 |
+| Feminino | Branca | C. 60-69 anos | 13381 | 3.50 |
+| Feminino | Ignorada | C. 60-69 anos | 325 | 0.09 |
+| Feminino | Indígena | C. 60-69 anos | 61 | 0.02 |
+| Feminino | Parda | C. 60-69 anos | 11954 | 3.13 |
+| Feminino | Preta | C. 60-69 anos | 3393 | 0.89 |
+| Feminino | Amarela | D. 70-79 anos | 247 | 0.06 |
+| Feminino | Branca | D. 70-79 anos | 23580 | 6.17 |
+
 ---
 
 ### Q6 — Variação mensal de óbitos por DCV (LAG)
@@ -510,6 +635,31 @@ ORDER BY m.no_macro, d.nr_ano, d.nr_mes;
 **Técnica:** `LAG(expr)` retorna o valor da linha anterior dentro da janela definida por `PARTITION BY`. A partição por macrorregião garante que a série temporal de cada macro é independente. `ORDER BY d.nr_ano, d.nr_mes` define o que significa "linha anterior" (cronologicamente). A primeira linha de cada partição retorna `NULL` corretamente, pois não existe mês anterior. Antes das funções de janela, isso exigiria um self-join com lógica manual de "mês anterior", percorrendo a tabela duas vezes.
 
 **Resultado:** Todas as macrorregiões exibem pico entre maio–agosto (inverno) e queda em dezembro. A macrorregião CENTRO caiu de 953 óbitos em novembro para 395 em dezembro (-58%), impossível de explicar epidemiologicamente, sugerindo fortemente subnotificação tardia do SIM.
+
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q6.pdf](results/Q6.pdf))*:
+
+| NO_MACRO | NR_ANO | NR_MES | OBITOS_DCV | OBITOS_MES_ANTERIOR | VARIACAO_ABSOLUTA |
+|---|---:|---:|---:|---:|---:|
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 1 | 374 | (null) | (null) |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 2 | 317 | 374 | -57 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 3 | 358 | 317 | 41 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 4 | 356 | 358 | -2 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 5 | 361 | 356 | 5 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 6 | 413 | 361 | 52 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 7 | 427 | 413 | 14 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 8 | 395 | 427 | -32 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 9 | 400 | 395 | 5 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 10 | 393 | 400 | -7 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 11 | 324 | 393 | -69 |
+| 1ª MACRORREGIAO DE SAUDE | 2025 | 12 | 270 | 324 | -54 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 1 | 140 | (null) | (null) |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 2 | 158 | 140 | 18 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 3 | 150 | 158 | -8 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 4 | 191 | 150 | 41 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 5 | 170 | 191 | -21 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 6 | 205 | 170 | 35 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 7 | 228 | 205 | 23 |
+| 2ª MACRORREGIAO DE SAUDE | 2025 | 8 | 206 | 228 | -22 |
 
 ---
 
@@ -545,6 +695,31 @@ EXEC DBMS_MVIEW.REFRESH('MV_RESUMO_MACRO_ANUAL', 'C');
 **Técnica:** Uma Materialized View (MV) armazena fisicamente o resultado da query em disco (aula 05). Diferente de uma VIEW comum, a MV é uma tabela real com dados pré-calculados, permitindo consultas praticamente instantâneas, independentemente do volume da `FATO_OBITO`. `BUILD IMMEDIATE` popula a MV na criação. `REFRESH COMPLETE ON DEMAND` reconstrói completamente somente quando chamado manualmente, sendo adequado para cargas ETL em lote, onde `ON COMMIT` seria inviável.
 
 **Resultado:** A MV foi criada com sucesso e aparece no SQL Developer sob "Materialized Views" no schema `dw_dcv`. A macrorregião "1ª MACRORREGIAO DE SAUDE" (Nordeste) apresenta o maior `pct_dcv` (29,67%) e a menor `idade_media` geral (63,89 anos), possivelmente reflexo de alta mortalidade por causas externas em população jovem puxando a média de idade para baixo. A soma de `obitos_dcv` em todas as macrorregiões equivale ao total da Q1 (~382.363), confirmando consistência dos dados.
+
+**Amostra dos resultados** *(primeiras 20 linhas — resultado completo: [Q7.pdf](results/Q7.pdf))*:
+
+| CO_MACRO | NO_MACRO | NO_REGIAO_PAIS | NR_ANO | TOTAL_OBITOS | OBITOS_DCV | PCT_DCV | IDADE_MEDIA |
+|---:|---|---|---:|---:|---:|---:|---:|
+| 5302 | DISTRITO FEDERAL | Centro-Oeste | 2025 | 15029 | 3376 | 22.46 | 67 |
+| 5210 | MACRORREGIAO CENTRO SUDESTE | Centro-Oeste | 2025 | 9989 | 2422 | 24.25 | 65 |
+| 5011 | CONE SUL | Centro-Oeste | 2025 | 6258 | 1649 | 26.35 | 63 |
+| 5208 | MACRORREGIAO CENTRO-OESTE | Centro-Oeste | 2025 | 16434 | 4122 | 25.08 | 67 |
+| 5101 | MACRORREGIAO SUL | Centro-Oeste | 2025 | 3664 | 824 | 22.49 | 64 |
+| 5012 | COSTA LESTE | Centro-Oeste | 2025 | 2469 | 557 | 22.56 | 64 |
+| 5207 | MACRORREGIAO NORDESTE | Centro-Oeste | 2025 | 6867 | 1726 | 25.13 | 60 |
+| 5106 | MACRORREGIAO CENTRO-NOROESTE | Centro-Oeste | 2025 | 2962 | 715 | 24.14 | 62 |
+| 5104 | MACRORREGIAO LESTE | Centro-Oeste | 2025 | 2195 | 409 | 18.63 | 58 |
+| 5009 | PANTANAL | Centro-Oeste | 2025 | 1034 | 241 | 23.31 | 64 |
+| 5206 | MACRORREGIAO SUDOESTE | Centro-Oeste | 2025 | 4630 | 1160 | 25.05 | 65 |
+| 5209 | MACRORREGIAO CENTRO-NORTE | Centro-Oeste | 2025 | 8387 | 2085 | 24.86 | 66 |
+| 5105 | MACRORREGIAO CENTRO-NORTE | Centro-Oeste | 2025 | 7125 | 1905 | 26.74 | 64 |
+| 5010 | CENTRO | Centro-Oeste | 2025 | 9580 | 2639 | 27.55 | 66 |
+| 5103 | MACRORREGIAO NORTE | Centro-Oeste | 2025 | 4566 | 944 | 20.67 | 60 |
+| 5102 | MACRORREGIAO OESTE | Centro-Oeste | 2025 | 2227 | 484 | 21.73 | 62 |
+| 2704 | 1ª MACRORREGIAO DE SAUDE | Nordeste | 2025 | 14787 | 4388 | 29.67 | 63 |
+| 2914 | NORDESTE (NRS - ALAGOINHAS) | Nordeste | 2025 | 6103 | 1484 | 24.32 | 67 |
+| 2109 | MACRORREGIAO SUL | Nordeste | 2025 | 7838 | 2143 | 27.34 | 62 |
+| 2910 | SUL (NBS - ILHEUS) | Nordeste | 2025 | 12341 | 3130 | 25.36 | 65 |
 
 ---
 
