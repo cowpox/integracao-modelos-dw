@@ -150,7 +150,45 @@ As duas tabelas `_RAW` existem porque JSON e XML exigem uma etapa de receptaçã
 
 ### 4.2 Carga do CSV — STG_MORTALIDADE
 
-Feita pelo Import Data Wizard do SQL Developer ou pelo SQL*Loader via linha de comando. O delimitador do SIM é `;` (ponto e vírgula), e foram selecionadas apenas 15 das 70 colunas do CSV original.
+Feita pelo **Import Data Wizard do SQL Developer** ou pelo **SQL\*Loader** via linha de comando. O delimitador do SIM é `;` (ponto e vírgula), e foram selecionadas apenas 15 das 70 colunas do CSV original.
+
+**Opção 1 — Import Data Wizard (SQL Developer):** Menu *Tools → Import Data*, selecionar o arquivo, configurar delimitador `;`, encoding `UTF-8` e mapear as 15 colunas para a tabela `STG_MORTALIDADE`.
+
+**Opção 2 — SQL\*Loader:** criar o arquivo de controle abaixo e executar o comando via terminal:
+
+```
+-- mortalidade.ctl
+LOAD DATA
+CHARACTERSET UTF8
+INFILE 'Mortalidade_Geral_2025.csv'
+APPEND INTO TABLE stg_mortalidade
+FIELDS TERMINATED BY ';'
+OPTIONALLY ENCLOSED BY '"'
+TRAILING NULLCOLS
+(
+    contador,
+    dtobito,
+    tipobito,
+    codmunres,
+    codmunocor,
+    causabas,
+    linhaa,
+    linhab,
+    linhac,
+    linhad,
+    sexo,
+    idade,
+    racacor,
+    lococor,
+    necropsia
+)
+```
+
+```bash
+sqlldr userid=usuario/senha@banco control=mortalidade.ctl log=mortalidade.log skip=1
+```
+
+O parâmetro `skip=1` descarta o cabeçalho do CSV. O log gerado pelo SQL\*Loader registra linhas rejeitadas e permite auditoria da carga.
 
 **Resultado:** 1.507.424 linhas; zero registros sem causa, sem município ou com data inválida.
 
@@ -585,7 +623,7 @@ CREATE TABLE stg_mortalidade (
     necropsia    VARCHAR2(2)
 );
 -- Carga via Import Wizard (delimitador ";", encoding UTF8, selecionar 15 colunas)
--- ou SQL*Loader — ver roteiro_implementacao_v2.md para detalhes
+-- ou SQL*Loader: sqlldr userid=usuario/senha@banco control=mortalidade.ctl log=mortalidade.log skip=1
 
 -- STG_CNES_RAW
 CREATE TABLE stg_cnes_raw (
